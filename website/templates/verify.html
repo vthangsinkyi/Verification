@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Verification</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="verification-container">
+        <div class="verification-card">
+            <div class="verification-header">
+                <i class="fas fa-shield-check fa-3x"></i>
+                <h1>Discord Verification</h1>
+                <p class="subtitle">Complete verification to access the server</p>
+            </div>
+            
+            <div class="verification-steps">
+                <div class="step active">
+                    <span class="step-number">1</span>
+                    <span class="step-text">Connect Discord</span>
+                </div>
+                <div class="step">
+                    <span class="step-number">2</span>
+                    <span class="step-text">IP Check</span>
+                </div>
+                <div class="step">
+                    <span class="step-number">3</span>
+                    <span class="step-text">Complete</span>
+                </div>
+            </div>
+            
+            <div class="verification-body">
+                <div class="warning-box">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <p><strong>Warning:</strong> VPN/Proxy users will be automatically banned. One account per person only.</p>
+                </div>
+                
+                <div id="verificationResult"></div>
+                
+                <div class="verification-form">
+                    <h3><i class="fas fa-user"></i> Discord Information</h3>
+                    <input type="text" id="discordUsername" placeholder="Your Discord Username" required>
+                    <input type="text" id="discordID" placeholder="Your Discord ID" required>
+                    
+                    <button id="startVerification" class="btn-verify">
+                        <i class="fab fa-discord"></i> Start Verification
+                    </button>
+                </div>
+                
+                <div class="info-box">
+                    <h3><i class="fas fa-info-circle"></i> What we check:</h3>
+                    <ul>
+                        <li><i class="fas fa-check"></i> IP Address verification</li>
+                        <li><i class="fas fa-check"></i> VPN/Proxy detection</li>
+                        <li><i class="fas fa-check"></i> Ban list check</li>
+                        <li><i class="fas fa-check"></i> One account per IP</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="verification-footer">
+                <p><i class="fas fa-lock"></i> Your data is secure and only used for verification</p>
+                <p><a href="/admin/login" style="color: #666; font-size: 12px;">Admin Login</a></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('startVerification').addEventListener('click', async function() {
+            const username = document.getElementById('discordUsername').value;
+            const discordId = document.getElementById('discordID').value;
+            
+            if (!username || !discordId) {
+                showResult('Please fill in both fields', 'error');
+                return;
+            }
+            
+            showResult('Verifying...', 'loading');
+            
+            try {
+                const response = await fetch('/api/verify', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        username: username,
+                        discord_id: discordId
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showResult(`
+                        <div style="color: green;">
+                            <h3><i class="fas fa-check-circle"></i> Verification Successful!</h3>
+                            <p>✅ You have been verified!</p>
+                            <p>Username: ${data.data.username}</p>
+                            <p>VPN Check: ${data.data.vpn_check}</p>
+                            <p>You can now return to Discord and access the server.</p>
+                        </div>
+                    `, 'success');
+                } else {
+                    showResult(`
+                        <div style="color: red;">
+                            <h3><i class="fas fa-times-circle"></i> Verification Failed</h3>
+                            <p>❌ ${data.error}</p>
+                            <p>If you believe this is an error, contact an admin.</p>
+                        </div>
+                    `, 'error');
+                }
+            } catch (error) {
+                showResult('Error connecting to server', 'error');
+            }
+        });
+        
+        function showResult(message, type) {
+            const resultDiv = document.getElementById('verificationResult');
+            resultDiv.innerHTML = `<div class="result-${type}">${message}</div>`;
+        }
+    </script>
+</body>
+</html>

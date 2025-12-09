@@ -1,0 +1,58 @@
+services:
+  # -----------------------
+  # 1. FLASK WEBSITE
+  # -----------------------
+  - type: web
+    name: discord-verification-website
+    env: python
+    region: virginia
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --bind 0.0.0.0:$PORT website.wsgi:application
+    envVars:
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: DISCORD_LOGS_WEBHOOK
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: DATABASE_NAME
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: FLASK_ENV
+        value: production
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: WEBSITE_URL
+        value: https://discord-verification.onrender.com
+
+  # -----------------------
+  # 2. DISCORD BOT
+  # -----------------------
+  - type: worker
+    name: discord-verification-bot
+    env: python
+    region: virginia
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot/bot.py
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
+      - key: VERIFIED_ROLE_ID
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: DISCORD_LOGS_WEBHOOK
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: DATABASE_NAME
+        sync: false
+      - key: IPINFO_TOKEN
+        sync: false
+      - key: VPN_API_KEY
+        sync: false
