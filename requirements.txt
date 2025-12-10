@@ -1,6 +1,6 @@
-# Discord libraries (choose ONE)
-discord.py==2.3.2
+# Discord Libraries
 py-cord==2.4.1
+discord.py==2.3.2
 
 # Web Framework
 Flask==2.3.3
@@ -23,8 +23,8 @@ ipaddress==1.0.23
 maxminddb==2.4.0
 
 # Async
-asyncio==3.4.3
 aiohttp==3.9.4
+asyncio==3.4.3
 
 # Development
 black==23.7.0
