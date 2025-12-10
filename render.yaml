@@ -1,11 +1,10 @@
 services:
-  # -----------------------
-  # 1. FLASK WEBSITE
-  # -----------------------
+  # ------------------------------------
+  # 1. FLASK WEBSITE SERVICE
+  # ------------------------------------
   - type: web
     name: discord-verification-website
     env: python
-    runtime: python3.12
     region: virginia
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn --bind 0.0.0.0:$PORT website.wsgi:application
@@ -29,13 +28,12 @@ services:
       - key: WEBSITE_URL
         value: https://discord-verification.onrender.com
 
-  # -----------------------
-  # 2. DISCORD BOT
-  # -----------------------
+  # ------------------------------------
+  # 2. DISCORD BOT WORKER
+  # ------------------------------------
   - type: worker
     name: discord-verification-bot
     env: python
-    runtime: python3.12
     region: virginia
     buildCommand: pip install -r requirements.txt
     startCommand: python bot/bot.py
