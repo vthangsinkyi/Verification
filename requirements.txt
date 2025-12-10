@@ -24,7 +24,7 @@ maxminddb==2.4.0
 
 # Async
 asyncio==3.4.3
-aiohttp==3.9.5
+aiohttp==3.8.5   # IMPORTANT: py-cord requires <3.9
 
 # Development
 black==23.7.0
