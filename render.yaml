@@ -9,7 +9,7 @@ services:
     buildCommand: |
       pip install -r requirements.txt
     startCommand: |
-      gunicorn --bind 0.0.0.0:$PORT website.wsgi:application
+      gunicorn --worker-class eventlet --bind 0.0.0.0:$PORT website.wsgi:application
     envVars:
       - key: DISCORD_WEBHOOK_URL
         sync: false
