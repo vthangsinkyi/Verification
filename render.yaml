@@ -29,7 +29,7 @@ services:
       - key: ADMIN_PASSWORD
         sync: false
       - key: WEBSITE_URL
-        value: https://discord-verification.onrender.com
+        value: https://koalahub.onrender.com
       # Add Python version specification
       - key: PYTHON_VERSION
         value: 3.11.9
