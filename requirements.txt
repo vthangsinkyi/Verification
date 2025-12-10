@@ -2,29 +2,29 @@
 discord.py==2.3.2
 
 # Web Framework
-Flask==2.3.3
+Flask==3.0.0
 Flask-CORS==4.0.0
-flask-socketio==5.3.4
-eventlet==0.33.3
+flask-socketio==5.3.6
+eventlet==0.35.1
 gunicorn==21.2.0
 
 # Database
-pymongo==4.4.1
+pymongo==4.6.0
 dnspython==2.4.2
 
 # Utilities
 python-dotenv==1.0.0
 requests==2.31.0
-bcrypt==4.0.1
-cryptography==41.0.4
+bcrypt==4.1.2
+cryptography==42.0.5
 
 # IP Checking
 ipaddress==1.0.23
-maxminddb==2.4.0
+maxminddb==2.5.0
 
-# Async
-aiohttp==3.8.4
+# Async - UPDATED VERSION FOR PYTHON 3.13
+aiohttp==3.9.3
 
 # Dev Tools
-black==23.7.0
-flake8==6.0.0
+black==24.1.1
+flake8==7.0.0
