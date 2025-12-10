@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import secrets
 import os
 import sys
+import urllib.parse
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -116,6 +117,52 @@ def create_app():
             print(f"Webhook error: {e}")
             return False
     
+    def exchange_code(code):
+        """Exchange OAuth2 code for access token"""
+        data = {
+            'client_id': Config.CLIENT_ID,
+            'client_secret': Config.CLIENT_SECRET,
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': Config.REDIRECT_URI,
+            'scope': 'identify'
+        }
+        
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded'
+        }
+        
+        try:
+            response = requests.post(
+                'https://discord.com/api/oauth2/token',
+                data=data,
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"OAuth2 token exchange error: {e}")
+            return None
+    
+    def get_user_info(access_token):
+        """Get user info from Discord API"""
+        headers = {
+            'Authorization': f'Bearer {access_token}'
+        }
+        
+        try:
+            response = requests.get(
+                'https://discord.com/api/users/@me',
+                headers=headers,
+                timeout=10
+            )
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            print(f"Discord API error: {e}")
+            return None
+    
     # Middleware for admin routes
     def admin_required(f):
         from functools import wraps
@@ -133,22 +180,79 @@ def create_app():
     
     @app.route('/verify')
     def verify_page():
-        """Verification page"""
-        return render_template('verify.html')
+        """Verification page with Discord OAuth2"""
+        # Check if user already has Discord info in session
+        discord_user = session.get('discord_user')
+        
+        return render_template('verify.html', 
+                             discord_user=discord_user,
+                             client_id=Config.CLIENT_ID,
+                             redirect_uri=urllib.parse.quote(Config.REDIRECT_URI))
+    
+    @app.route('/auth/discord')
+    def auth_discord():
+        """Redirect to Discord OAuth2"""
+        discord_auth_url = (
+            f"https://discord.com/api/oauth2/authorize"
+            f"?client_id={Config.CLIENT_ID}"
+            f"&redirect_uri={urllib.parse.quote(Config.REDIRECT_URI)}"
+            f"&response_type=code"
+            f"&scope=identify"
+            f"&prompt=none"
+        )
+        return redirect(discord_auth_url)
+    
+    @app.route('/auth/callback')
+    def auth_callback():
+        """Discord OAuth2 callback"""
+        code = request.args.get('code')
+        
+        if not code:
+            return redirect(url_for('verify_page'))
+        
+        # Exchange code for access token
+        token_data = exchange_code(code)
+        if not token_data:
+            return redirect(url_for('verify_page'))
+        
+        # Get user info
+        user_info = get_user_info(token_data.get('access_token'))
+        if not user_info:
+            return redirect(url_for('verify_page'))
+        
+        # Store user info in session
+        session['discord_user'] = {
+            'id': user_info['id'],
+            'username': user_info['username'],
+            'discriminator': user_info.get('discriminator', '0'),
+            'avatar': user_info.get('avatar'),
+            'full_username': f"{user_info['username']}#{user_info.get('discriminator', '0')}"
+        }
+        
+        return redirect(url_for('verify_page'))
+    
+    @app.route('/auth/logout')
+    def auth_logout():
+        """Logout from Discord OAuth2"""
+        session.pop('discord_user', None)
+        return redirect(url_for('verify_page'))
     
     @app.route('/api/verify', methods=['POST'])
     def api_verify():
         """API endpoint for verification"""
         try:
-            data = request.get_json()
-            if not data:
-                return jsonify({"success": False, "error": "No data provided"}), 400
+            # Check if user is logged in via Discord OAuth2
+            discord_user = session.get('discord_user')
             
-            discord_id = data.get('discord_id')
-            username = data.get('username')
+            if not discord_user:
+                return jsonify({
+                    "success": False, 
+                    "error": "Please connect your Discord account first.",
+                    "requires_oauth": True
+                }), 401
             
-            if not discord_id or not username:
-                return jsonify({"success": False, "error": "Missing Discord ID or username"}), 400
+            discord_id = discord_user['id']
+            username = discord_user['full_username']
             
             # Get client IP
             ip_address = get_client_ip()
@@ -158,13 +262,11 @@ def create_app():
             
             # Check if IP is banned
             is_banned = False
-            if db is not None:  # FIXED: Changed from 'if db:'
-                # Check MongoDB
+            if db is not None:
                 banned_ip = db.banned_ips.find_one({"ip_address": ip_address})
                 if banned_ip:
                     is_banned = True
             elif 'memory_storage' in locals():
-                # Check memory storage
                 is_banned = any(ban['ip_address'] == ip_address for ban in memory_storage['banned_ips'])
             
             if is_banned:
@@ -192,7 +294,7 @@ def create_app():
                     "banned_at": datetime.utcnow()
                 }
                 
-                if db is not None:  # FIXED: Changed from 'if db:'
+                if db is not None:
                     db.banned_ips.insert_one(ban_data)
                 elif 'memory_storage' in locals():
                     memory_storage['banned_ips'].append(ban_data)
@@ -221,14 +323,13 @@ def create_app():
                 "role_added": False
             }
             
-            if db is not None:  # FIXED: Changed from 'if db:'
+            if db is not None:
                 db.users.update_one(
                     {"discord_id": str(discord_id)},
                     {"$set": user_data},
                     upsert=True
                 )
             elif 'memory_storage' in locals():
-                # Update or add to memory storage
                 existing = next((u for u in memory_storage['users'] if u['discord_id'] == str(discord_id)), None)
                 if existing:
                     memory_storage['users'].remove(existing)
@@ -236,10 +337,13 @@ def create_app():
             
             # Send success notification
             send_discord_webhook(
-                "VERIFICATION SUCCESS",
+                "✅ VERIFICATION SUCCESS",
                 f"**User:** {username}\n**ID:** {discord_id}\n**IP:** ||{ip_address}||\n**VPN Check:** Passed ✅",
                 0x00ff00
             )
+            
+            # Clear session after successful verification
+            session.pop('discord_user', None)
             
             return jsonify({
                 "success": True,
@@ -285,7 +389,7 @@ def create_app():
         
         # Calculate stats
         try:
-            if db is not None:  # FIXED: Changed from 'if db:'
+            if db is not None:
                 stats["total_users"] = db.users.count_documents({})
                 stats["banned_users"] = db.banned_ips.count_documents({})
                 stats["total_bans"] = db.banned_ips.count_documents({})
@@ -311,14 +415,13 @@ def create_app():
         banned_list = []
         
         try:
-            if db is not None:  # FIXED: Changed from 'if db:'
+            if db is not None:
                 banned_list = list(db.banned_ips.find().sort("banned_at", -1).limit(100))
-                # Convert ObjectId to string for template
                 for item in banned_list:
                     if '_id' in item:
                         item['_id'] = str(item['_id'])
             elif 'memory_storage' in locals():
-                banned_list = memory_storage['banned_ips'][-100:]  # Get last 100
+                banned_list = memory_storage['banned_ips'][-100:]
         except Exception as e:
             print(f"Banned list error: {e}")
         
@@ -331,9 +434,8 @@ def create_app():
         verified_list = []
         
         try:
-            if db is not None:  # FIXED: Changed from 'if db:'
+            if db is not None:
                 verified_list = list(db.users.find().sort("verified_at", -1).limit(100))
-                # Convert ObjectId to string for template
                 for item in verified_list:
                     if '_id' in item:
                         item['_id'] = str(item['_id'])
@@ -351,7 +453,7 @@ def create_app():
     def admin_unban(ip_address):
         """Unban IP address"""
         try:
-            if db is not None:  # FIXED: Changed from 'if db:'
+            if db is not None:
                 db.banned_ips.delete_one({"ip_address": ip_address})
             elif 'memory_storage' in locals():
                 memory_storage['banned_ips'] = [b for b in memory_storage['banned_ips'] if b['ip_address'] != ip_address]
@@ -373,26 +475,15 @@ def create_app():
         session.clear()
         return redirect(url_for('admin_login'))
     
-    @app.route('/callback')
-    def discord_callback():
-        """Discord OAuth2 callback placeholder"""
-        return redirect(url_for('verify_page'))
-    
     @app.route('/healthz')
     @app.route('/health')
     def health_check():
-        """Health check endpoint for Render and monitoring"""
+        """Health check endpoint"""
         status = {
             "status": "online",
             "service": "discord-verification",
-            "database": "connected" if db is not None else "disconnected (memory mode)",
-            "bot": "running",
-            "timestamp": datetime.utcnow().isoformat(),
-            "endpoints": {
-                "verify": "/verify",
-                "admin": "/admin/login",
-                "api": "/api/verify"
-            }
+            "database": "connected" if db is not None else "memory_mode",
+            "timestamp": datetime.utcnow().isoformat()
         }
         return jsonify(status)
     
