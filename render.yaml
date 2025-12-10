@@ -6,9 +6,8 @@ services:
     name: discord-verification-website
     env: python
     region: virginia
-    runtime: python3.11  # Add this line
     buildCommand: |
-      python -m pip install --upgrade pip
+      pip install --upgrade pip
       pip install -r requirements.txt
     startCommand: |
       gunicorn --worker-class eventlet --bind 0.0.0.0:$PORT website.wsgi:application
@@ -31,6 +30,9 @@ services:
         sync: false
       - key: WEBSITE_URL
         value: https://discord-verification.onrender.com
+      # Add Python version specification
+      - key: PYTHON_VERSION
+        value: 3.11.9
 
   # ------------------------------------
   # 2. DISCORD BOT WORKER
@@ -39,9 +41,8 @@ services:
     name: discord-verification-bot
     env: python
     region: virginia
-    runtime: python3.11  # Add this line
     buildCommand: |
-      python -m pip install --upgrade pip
+      pip install --upgrade pip
       pip install -r requirements.txt
     startCommand: |
       python bot/bot.py
@@ -64,3 +65,6 @@ services:
         sync: false
       - key: VPN_API_KEY
         sync: false
+      # Add Python version specification
+      - key: PYTHON_VERSION
+        value: 3.11.9
