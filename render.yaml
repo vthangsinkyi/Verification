@@ -6,8 +6,10 @@ services:
     name: discord-verification-website
     env: python
     region: virginia
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --bind 0.0.0.0:$PORT website.wsgi:application
+    buildCommand: |
+      pip install -r requirements.txt
+    startCommand: |
+      gunicorn --bind 0.0.0.0:$PORT website.wsgi:application
     envVars:
       - key: DISCORD_WEBHOOK_URL
         sync: false
@@ -35,8 +37,10 @@ services:
     name: discord-verification-bot
     env: python
     region: virginia
-    buildCommand: pip install -r requirements.txt
-    startCommand: python bot/bot.py
+    buildCommand: |
+      pip install -r requirements.txt
+    startCommand: |
+      python bot/bot.py
     envVars:
       - key: DISCORD_TOKEN
         sync: false
