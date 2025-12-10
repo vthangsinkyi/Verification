@@ -7,6 +7,7 @@ services:
     env: python
     region: virginia
     buildCommand: |
+      pip install --upgrade pip
       pip install -r requirements.txt
     startCommand: |
       gunicorn --worker-class eventlet --bind 0.0.0.0:$PORT website.wsgi:application
@@ -38,6 +39,7 @@ services:
     env: python
     region: virginia
     buildCommand: |
+      pip install --upgrade pip
       pip install -r requirements.txt
     startCommand: |
       python bot/bot.py
