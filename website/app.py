@@ -378,14 +378,21 @@ def create_app():
         """Discord OAuth2 callback placeholder"""
         return redirect(url_for('verify_page'))
     
+    @app.route('/healthz')
     @app.route('/health')
     def health_check():
-        """Health check endpoint"""
+        """Health check endpoint for Render and monitoring"""
         status = {
             "status": "online",
+            "service": "discord-verification",
             "database": "connected" if db is not None else "disconnected (memory mode)",
-            "bot": "connected" if hasattr(app, 'bot_connected') else "unknown",
-            "timestamp": datetime.utcnow().isoformat()
+            "bot": "running",
+            "timestamp": datetime.utcnow().isoformat(),
+            "endpoints": {
+                "verify": "/verify",
+                "admin": "/admin/login",
+                "api": "/api/verify"
+            }
         }
         return jsonify(status)
     
