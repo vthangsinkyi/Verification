@@ -591,3 +591,86 @@ body {
     color: #27ae60;
     font-weight: 500;
 }
+
+/* Discord Connect Styles */
+.discord-connect, .discord-connected {
+    text-align: center;
+    padding: 20px;
+}
+
+.btn-discord {
+    display: inline-block;
+    background: #5865F2;
+    color: white;
+    padding: 15px 30px;
+    border-radius: 8px;
+    text-decoration: none;
+    font-size: 18px;
+    font-weight: bold;
+    margin: 20px 0;
+    transition: background 0.3s;
+}
+
+.btn-discord:hover {
+    background: #4752C4;
+}
+
+.small-text {
+    font-size: 14px;
+    color: #666;
+    margin-top: 15px;
+}
+
+.user-info {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 20px 0;
+    padding: 15px;
+    background: #f8f9fa;
+    border-radius: 10px;
+}
+
+.avatar-placeholder {
+    width: 60px;
+    height: 60px;
+    background: #5865F2;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-right: 15px;
+    color: white;
+    font-size: 24px;
+}
+
+.user-details h3 {
+    margin: 0;
+    color: #333;
+}
+
+.user-details p {
+    margin: 5px 0 0 0;
+    color: #666;
+    font-size: 14px;
+}
+
+.btn-logout {
+    display: inline-block;
+    background: #e74c3c;
+    color: white;
+    padding: 10px 20px;
+    border-radius: 6px;
+    text-decoration: none;
+    font-size: 14px;
+    margin: 10px 0;
+    transition: background 0.3s;
+}
+
+.btn-logout:hover {
+    background: #c0392b;
+}
+
+.action-buttons {
+    margin: 20px 0;
+}
