@@ -1,4 +1,4 @@
-# Discord
+# Discord libraries (choose ONE)
 discord.py==2.3.2
 py-cord==2.4.1
 
@@ -24,7 +24,7 @@ maxminddb==2.4.0
 
 # Async
 asyncio==3.4.3
-aiohttp==3.8.5   # IMPORTANT: py-cord requires <3.9
+aiohttp==3.9.4
 
 # Development
 black==23.7.0
