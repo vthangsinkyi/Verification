@@ -5,6 +5,20 @@ import time
 import signal
 import atexit
 
+# Check Python version before anything else
+PYTHON_VERSION = sys.version_info
+if PYTHON_VERSION.major == 3 and PYTHON_VERSION.minor >= 13:
+    print(f"⚠️  WARNING: Python {PYTHON_VERSION.major}.{PYTHON_VERSION.minor} detected")
+    print("⚠️  Python 3.13+ may have compatibility issues with discord.py")
+    print("⚠️  Consider using Python 3.11.9")
+    # Add mock for audioop if needed
+    try:
+        import audioop
+    except ImportError:
+        print("⚠️  audioop module not found - creating mock")
+        import types
+        sys.modules['audioop'] = types.ModuleType('audioop')
+
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import after path setup
