@@ -99,7 +99,7 @@
 
     <script>
         document.getElementById('startVerification')?.addEventListener('click', async function() {
-            showResult('Verifying...', 'loading');
+            showResult('<div class="loading-spinner"><i class="fas fa-spinner fa-spin"></i> Verifying...</div>', 'loading');
             
             try {
                 const response = await fetch('/api/verify', {
@@ -113,43 +113,63 @@
                 
                 if (data.success) {
                     showResult(`
-                        <div style="color: green;">
-                            <h3><i class="fas fa-check-circle"></i> Verification Successful!</h3>
-                            <p>✅ You have been verified!</p>
-                            <p>Username: ${data.data.username}</p>
-                            <p>VPN Check: ${data.data.vpn_check}</p>
-                            <p>You can now return to Discord and access the server.</p>
+                        <div style="color: green; text-align: center;">
+                            <div style="font-size: 48px; margin-bottom: 20px;">✅</div>
+                            <h3 style="color: green;">Verification Successful!</h3>
+                            <p style="font-size: 18px; margin: 10px 0;">🎉 You have been successfully verified!</p>
+                            <div style="background: #e8f5e9; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                                <p><strong>👤 Username:</strong> ${data.data.username}</p>
+                                <p><strong>🛡️ VPN Check:</strong> ${data.data.vpn_check}</p>
+                                <p><strong>🔐 Status:</strong> Verified ✅</p>
+                            </div>
+                            <p>You can now return to Discord and access all channels in the server.</p>
                             <p>The bot will automatically give you the Verified role.</p>
+                            <p style="margin-top: 20px; font-style: italic;">Please go back to the server to enjoy your access!</p>
                         </div>
                     `, 'success');
                     
                     // Clear the form
                     setTimeout(() => {
                         window.location.href = '/verify';
-                    }, 5000);
+                    }, 8000);
                 } else {
                     if (data.requires_oauth) {
                         showResult(`
-                            <div style="color: orange;">
-                                <h3><i class="fas fa-exclamation-circle"></i> Discord Login Required</h3>
-                                <p>Please connect your Discord account first.</p>
+                            <div style="color: orange; text-align: center;">
+                                <div style="font-size: 48px; margin-bottom: 20px;">⚠️</div>
+                                <h3 style="color: orange;">Discord Login Required</h3>
+                                <p>Please connect your Discord account first to continue.</p>
                                 <p><a href="/auth/discord" class="btn-discord" style="display: inline-block; margin-top: 10px;">
                                     <i class="fab fa-discord"></i> Login with Discord
                                 </a></p>
                             </div>
                         `, 'error');
+                    } else if (data.error.includes("already verified")) {
+                        showResult(`
+                            <div style="color: orange; text-align: center;">
+                                <div style="font-size: 48px; margin-bottom: 20px;">✅</div>
+                                <h3 style="color: orange;">Already Verified</h3>
+                                <p>✅ You are already verified!</p>
+                                <p>You don't need to verify again. Please return to the server.</p>
+                                <p>If you're having issues accessing the server, please contact an administrator.</p>
+                                <p style="margin-top: 20px;"><a href="/auth/logout" class="btn-logout" style="display: inline-block;">
+                                    <i class="fas fa-sign-out-alt"></i> Logout
+                                </a></p>
+                            </div>
+                        `, 'info');
                     } else {
                         showResult(`
-                            <div style="color: red;">
-                                <h3><i class="fas fa-times-circle"></i> Verification Failed</h3>
+                            <div style="color: red; text-align: center;">
+                                <div style="font-size: 48px; margin-bottom: 20px;">❌</div>
+                                <h3 style="color: red;">Verification Failed</h3>
                                 <p>❌ ${data.error}</p>
-                                <p>If you believe this is an error, contact an admin.</p>
+                                <p>If you believe this is an error, please contact an administrator.</p>
                             </div>
                         `, 'error');
                     }
                 }
             } catch (error) {
-                showResult('Error connecting to server', 'error');
+                showResult('<div style="color: red;">Error connecting to server. Please try again.</div>', 'error');
             }
         });
         
