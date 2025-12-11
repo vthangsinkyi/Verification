@@ -1,20 +1,20 @@
+import discord
+from discord.ext import commands, tasks
+from discord import app_commands
+import aiohttp
 import asyncio
 import json
-import os
-import sys
-import time
 from datetime import datetime, timedelta
 from typing import Optional
-
-import aiohttp
-import discord
-from discord import app_commands
-from discord.ext import commands, tasks
+import sys
+import os
+import time
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
-
+from utils.logger import logger
+from utils.backup import backup_database
 
 class VerificationBot(commands.Bot):
     def __init__(self):
@@ -33,6 +33,9 @@ class VerificationBot(commands.Bot):
         # Store pending verifications
         self.pending_verifications = {}
         
+        # Command cooldown tracking
+        self.command_cooldowns = {}
+        
     def setup_database(self):
         """Setup MongoDB connection"""
         try:
@@ -40,14 +43,14 @@ class VerificationBot(commands.Bot):
             self.db_client = MongoClient(Config.MONGODB_URI, serverSelectionTimeoutMS=5000)
             self.db_client.server_info()  # Test connection
             self.db = self.db_client[Config.DATABASE_NAME]
-            print("✅ Bot connected to MongoDB")
+            logger.info("✅ Bot connected to MongoDB")
         except Exception as e:
-            print(f"⚠️  Bot MongoDB connection failed: {e}")
+            logger.error(f"⚠️  Bot MongoDB connection failed: {e}")
             self.db = None
     
     async def on_ready(self):
-        print(f'✅ Bot logged in as {self.user}')
-        print(f'✅ Connected to {len(self.guilds)} guild(s)')
+        logger.info(f'✅ Bot logged in as {self.user}')
+        logger.info(f'✅ Connected to {len(self.guilds)} guild(s)')
         
         # Set status
         await self.change_presence(
@@ -60,13 +63,14 @@ class VerificationBot(commands.Bot):
         # Start background tasks
         self.check_verifications.start()
         self.cleanup_pending.start()
+        self.backup_database_task.start()
         
         # Sync commands
         try:
             synced = await self.tree.sync()
-            print(f"✅ Synced {len(synced)} command(s)")
+            logger.info(f"✅ Synced {len(synced)} command(s)")
         except Exception as e:
-            print(f"❌ Command sync failed: {e}")
+            logger.error(f"❌ Command sync failed: {e}")
     
     @tasks.loop(seconds=10)  # Check every 10 seconds
     async def check_verifications(self):
@@ -89,7 +93,7 @@ class VerificationBot(commands.Bot):
                 if not discord_id:
                     continue
                 
-                print(f"🎯 Processing verification for {username} ({discord_id})")
+                logger.info(f"🎯 Processing verification for {username} ({discord_id})")
                 
                 # Try to give role in all guilds the bot is in
                 role_given = False
@@ -103,7 +107,7 @@ class VerificationBot(commands.Bot):
                                 # Check if member already has role
                                 if verified_role not in member.roles:
                                     await member.add_roles(verified_role)
-                                    print(f"✅ Added role to {member.name} in {guild.name}")
+                                    logger.info(f"✅ Added role to {member.name} in {guild.name}")
                                     
                                     # Send DM to user
                                     try:
@@ -136,14 +140,14 @@ class VerificationBot(commands.Bot):
                     except discord.NotFound:
                         continue  # Member not in this guild
                     except discord.Forbidden:
-                        print(f"❌ No permission to add role in {guild.name}")
+                        logger.error(f"❌ No permission to add role in {guild.name}")
                         continue
                     except Exception as e:
-                        print(f"❌ Error giving role in {guild.name}: {e}")
+                        logger.error(f"❌ Error giving role in {guild.name}: {e}")
                         continue
                 
                 if not role_given:
-                    print(f"⚠️  Could not find member {username} ({discord_id}) in any server")
+                    logger.warning(f"⚠️  Could not find member {username} ({discord_id}) in any server")
                     # Add to pending for retry later
                     self.pending_verifications[discord_id] = {
                         "username": username,
@@ -152,7 +156,7 @@ class VerificationBot(commands.Bot):
                     }
         
         except Exception as e:
-            print(f"❌ Error in check_verifications: {e}")
+            logger.error(f"❌ Error in check_verifications: {e}")
     
     @tasks.loop(minutes=5)  # Cleanup every 5 minutes
     async def cleanup_pending(self):
@@ -167,13 +171,42 @@ class VerificationBot(commands.Bot):
         
         for discord_id in expired:
             del self.pending_verifications[discord_id]
-            print(f"🗑️  Removed expired pending verification: {discord_id}")
+            logger.info(f"🗑️  Removed expired pending verification: {discord_id}")
+    
+    @tasks.loop(hours=6)  # Backup every 6 hours
+    async def backup_database_task(self):
+        """Automatically backup database"""
+        try:
+            backup_path = backup_database()
+            if backup_path:
+                await self.send_webhook(
+                    "💾 DATABASE BACKUP",
+                    f"**Backup created:** {backup_path}\n**Time:** {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}",
+                    0x00ff00
+                )
+                logger.info(f"✅ Database backup created: {backup_path}")
+        except Exception as e:
+            logger.error(f"❌ Backup task failed: {e}")
     
     @check_verifications.before_loop
     @cleanup_pending.before_loop
+    @backup_database_task.before_loop
     async def before_tasks(self):
         """Wait until bot is ready before starting tasks"""
         await self.wait_until_ready()
+    
+    async def check_command_cooldown(self, user_id, command_name, cooldown_seconds):
+        """Check if command is on cooldown for user"""
+        key = f"{user_id}_{command_name}"
+        current_time = time.time()
+        
+        if key in self.command_cooldowns:
+            last_used = self.command_cooldowns[key]
+            if current_time - last_used < cooldown_seconds:
+                return False
+        
+        self.command_cooldowns[key] = current_time
+        return True
     
     async def on_member_join(self, member):
         """Check if new member is already verified and give role"""
@@ -201,7 +234,7 @@ class VerificationBot(commands.Bot):
                         {"$set": {"role_added": True, "role_added_at": datetime.utcnow()}}
                     )
                     
-                    print(f"✅ Auto-gave role to rejoining member: {member.name}")
+                    logger.info(f"✅ Auto-gave role to rejoining member: {member.name}")
                     
                     await self.send_webhook(
                         "🔄 AUTO-ROLE ON JOIN",
@@ -210,7 +243,7 @@ class VerificationBot(commands.Bot):
                     )
         
         except Exception as e:
-            print(f"❌ Error in on_member_join: {e}")
+            logger.error(f"❌ Error in on_member_join: {e}")
     
     async def setup_hook(self):
         """Setup all slash commands"""
@@ -220,6 +253,11 @@ class VerificationBot(commands.Bot):
         @app_commands.checks.has_permissions(administrator=True)
         async def setup_verification(interaction: discord.Interaction):
             """Setup verification embed"""
+            # Check cooldown
+            if not await self.check_command_cooldown(interaction.user.id, "setup", 30):
+                await interaction.response.send_message("⏳ This command is on cooldown. Please wait 30 seconds.", ephemeral=True)
+                return
+            
             embed = discord.Embed(
                 title="🔐 SERVER VERIFICATION",
                 description="**Click the button below to start verification**",
@@ -236,7 +274,7 @@ class VerificationBot(commands.Bot):
             view.add_item(button)
             
             await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            await self.log_action(f"Verification setup by {interaction.user}")
+            logger.info(f"Verification setup by {interaction.user}")
         
         # ============ /ban COMMAND ============
         @self.tree.command(name="ban", description="Ban a user and their IP")
@@ -253,6 +291,11 @@ class VerificationBot(commands.Bot):
             delete_messages: app_commands.Range[int, 0, 7] = 0
         ):
             """Ban user by ID and their IP"""
+            # Check cooldown
+            if not await self.check_command_cooldown(interaction.user.id, "ban", 10):
+                await interaction.response.send_message("⏳ This command is on cooldown. Please wait 10 seconds.", ephemeral=True)
+                return
+            
             try:
                 # Clean user ID (remove <@ and > if mention)
                 user_id = user_id.replace('<@', '').replace('>', '').replace('!', '')
@@ -326,6 +369,8 @@ class VerificationBot(commands.Bot):
                     0xff0000
                 )
                 
+                logger.info(f"User banned: {username} ({user_id}) by {interaction.user}")
+                
                 embed = discord.Embed(
                     title="✅ User Banned Successfully",
                     description=f"**User:** <@{user_id}>\n**ID:** {user_id}\n**IP:** ||{user_ip}||\n**Reason:** {reason}",
@@ -336,6 +381,74 @@ class VerificationBot(commands.Bot):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 
             except Exception as e:
+                logger.error(f"Ban command error: {e}")
+                await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+        
+        # ============ /unban COMMAND ============
+        @self.tree.command(name="unban", description="Unban a user by ID")
+        @app_commands.checks.has_permissions(ban_members=True)
+        @app_commands.describe(
+            user_id="User ID to unban",
+            reason="Reason for unban"
+        )
+        async def unban_user(
+            interaction: discord.Interaction, 
+            user_id: str,
+            reason: str = "Manual unban"
+        ):
+            """Unban a user"""
+            # Check cooldown
+            if not await self.check_command_cooldown(interaction.user.id, "unban", 10):
+                await interaction.response.send_message("⏳ This command is on cooldown. Please wait 10 seconds.", ephemeral=True)
+                return
+            
+            try:
+                # Clean user ID
+                user_id = user_id.replace('<@', '').replace('>', '').replace('!', '')
+                
+                if not user_id.isdigit():
+                    await interaction.response.send_message("❌ Invalid user ID", ephemeral=True)
+                    return
+                
+                # Unban from Discord
+                try:
+                    await interaction.guild.unban(discord.Object(id=int(user_id)), reason=reason)
+                except discord.NotFound:
+                    # Not banned in Discord, but we still process database
+                    pass
+                except discord.Forbidden:
+                    await interaction.response.send_message("❌ I don't have permission to unban this user!", ephemeral=True)
+                    return
+                
+                # Remove from database
+                if self.db is not None:
+                    self.db.users.update_one(
+                        {"discord_id": user_id},
+                        {"$set": {"is_banned": False}}
+                    )
+                    
+                    # Remove from banned_ips
+                    self.db.banned_ips.delete_many({"discord_id": user_id})
+                
+                await self.send_webhook(
+                    "✅ USER UNBANNED",
+                    f"**User:** <@{user_id}>\n**ID:** {user_id}\n**Reason:** {reason}\n**Unbanned by:** {interaction.user.mention}",
+                    0x00ff00
+                )
+                
+                logger.info(f"User unbanned: {user_id} by {interaction.user}")
+                
+                embed = discord.Embed(
+                    title="✅ User Unbanned",
+                    description=f"**User:** <@{user_id}>\n**Reason:** {reason}",
+                    color=discord.Color.green()
+                )
+                embed.set_footer(text=f"Unbanned by {interaction.user}")
+                
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                
+            except Exception as e:
+                logger.error(f"Unban command error: {e}")
                 await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
         
         # ============ /force_verify COMMAND ============
@@ -351,6 +464,11 @@ class VerificationBot(commands.Bot):
             ip_address: str = "Manual verification"
         ):
             """Force verify a user"""
+            # Check cooldown
+            if not await self.check_command_cooldown(interaction.user.id, "force_verify", 10):
+                await interaction.response.send_message("⏳ This command is on cooldown. Please wait 10 seconds.", ephemeral=True)
+                return
+            
             try:
                 if not Config.VERIFIED_ROLE_ID:
                     await interaction.response.send_message("❌ Verified role ID not configured!", ephemeral=True)
@@ -403,6 +521,8 @@ class VerificationBot(commands.Bot):
                     0x00ff00
                 )
                 
+                logger.info(f"Force verified: {user} by {interaction.user}")
+                
                 embed = discord.Embed(
                     title="✅ Force Verification Complete",
                     description=f"{user.mention} has been force verified!\n\n**Role Added:** {verified_role.mention}\n**IP Saved:** ||{ip_address}||",
@@ -413,6 +533,61 @@ class VerificationBot(commands.Bot):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 
             except Exception as e:
+                logger.error(f"Force verify error: {e}")
+                await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
+        
+        # ============ /stats COMMAND ============
+        @self.tree.command(name="stats", description="Show verification statistics")
+        @app_commands.checks.has_permissions(manage_guild=True)
+        async def stats_command(interaction: discord.Interaction):
+            """Show verification statistics"""
+            # Check cooldown
+            if not await self.check_command_cooldown(interaction.user.id, "stats", 30):
+                await interaction.response.send_message("⏳ This command is on cooldown. Please wait 30 seconds.", ephemeral=True)
+                return
+            
+            try:
+                if self.db is None:
+                    await interaction.response.send_message("❌ Database not available", ephemeral=True)
+                    return
+                
+                # Get stats from database
+                total_users = self.db.users.count_documents({})
+                verified_users = self.db.users.count_documents({"verified_at": {"$exists": True}})
+                banned_users = self.db.users.count_documents({"is_banned": True})
+                banned_ips = self.db.banned_ips.count_documents({})
+                
+                # Today's stats
+                today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+                today_verifications = self.db.users.count_documents({
+                    "verified_at": {"$gte": today}
+                })
+                
+                # Pending verifications
+                pending = len(self.pending_verifications)
+                
+                embed = discord.Embed(
+                    title="📊 Verification Statistics",
+                    color=discord.Color.blue(),
+                    timestamp=datetime.utcnow()
+                )
+                
+                embed.add_field(name="Total Users", value=f"👥 {total_users}", inline=True)
+                embed.add_field(name="Verified Users", value=f"✅ {verified_users}", inline=True)
+                embed.add_field(name="Banned Users", value=f"🚫 {banned_users}", inline=True)
+                embed.add_field(name="Banned IPs", value=f"🔒 {banned_ips}", inline=True)
+                embed.add_field(name="Today's Verifications", value=f"📈 {today_verifications}", inline=True)
+                embed.add_field(name="Pending Verifications", value=f"⏳ {pending}", inline=True)
+                
+                # Server info
+                embed.add_field(name="Server Members", value=f"👤 {len(interaction.guild.members)}", inline=True)
+                
+                embed.set_footer(text=f"Requested by {interaction.user}")
+                
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                
+            except Exception as e:
+                logger.error(f"Stats command error: {e}")
                 await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
         
         # ============ /remove_all_verify COMMAND ============
@@ -420,6 +595,11 @@ class VerificationBot(commands.Bot):
         @app_commands.checks.has_permissions(administrator=True)
         async def remove_all_verify(interaction: discord.Interaction):
             """Remove verify role from all users"""
+            # Check cooldown
+            if not await self.check_command_cooldown(interaction.user.id, "remove_all_verify", 60):
+                await interaction.response.send_message("⏳ This command is on cooldown. Please wait 60 seconds.", ephemeral=True)
+                return
+            
             try:
                 if not Config.VERIFIED_ROLE_ID:
                     await interaction.response.send_message("❌ Verified role ID not configured in .env file!", ephemeral=True)
@@ -477,6 +657,8 @@ class VerificationBot(commands.Bot):
                             0xff9900
                         )
                         
+                        logger.info(f"All verify removed: {removed_count} users by {interaction.user}")
+                        
                         embed = discord.Embed(
                             title="✅ All Verify Removed",
                             description=f"Removed {verified_role.mention} from **{removed_count}** users.\nFailed: **{failed_count}** users.",
@@ -504,6 +686,7 @@ class VerificationBot(commands.Bot):
                 await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
                 
             except Exception as e:
+                logger.error(f"Remove all verify error: {e}")
                 await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
         
         # ============ /verifyinfo COMMAND ============
@@ -512,6 +695,11 @@ class VerificationBot(commands.Bot):
         @app_commands.describe(user="User to check (optional)")
         async def verify_info(interaction: discord.Interaction, user: Optional[discord.Member] = None):
             """Get verification info"""
+            # Check cooldown
+            if not await self.check_command_cooldown(interaction.user.id, "verifyinfo", 5):
+                await interaction.response.send_message("⏳ This command is on cooldown. Please wait 5 seconds.", ephemeral=True)
+                return
+            
             target = user or interaction.user
             
             embed = discord.Embed(
@@ -575,6 +763,11 @@ class VerificationBot(commands.Bot):
         @app_commands.checks.has_permissions(administrator=True)
         async def fix_roles(interaction: discord.Interaction):
             """Fix missing roles for verified users"""
+            # Check cooldown
+            if not await self.check_command_cooldown(interaction.user.id, "fix_roles", 60):
+                await interaction.response.send_message("⏳ This command is on cooldown. Please wait 60 seconds.", ephemeral=True)
+                return
+            
             try:
                 if not Config.VERIFIED_ROLE_ID:
                     await interaction.response.send_message("❌ Verified role ID not configured!", ephemeral=True)
@@ -615,6 +808,8 @@ class VerificationBot(commands.Bot):
                         except:
                             continue
                 
+                logger.info(f"Fixed roles for {fixed_count} users by {interaction.user}")
+                
                 embed = discord.Embed(
                     title="✅ Roles Fixed",
                     description=f"Fixed roles for **{fixed_count}** users.\n\nThe bot will now automatically assign roles to newly verified users.",
@@ -624,6 +819,7 @@ class VerificationBot(commands.Bot):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 
             except Exception as e:
+                logger.error(f"Fix roles error: {e}")
                 await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
         
         # ============ /banip COMMAND ============
@@ -639,6 +835,11 @@ class VerificationBot(commands.Bot):
             reason: str = "Manual ban"
         ):
             """Ban an IP address manually"""
+            # Check cooldown
+            if not await self.check_command_cooldown(interaction.user.id, "banip", 10):
+                await interaction.response.send_message("⏳ This command is on cooldown. Please wait 10 seconds.", ephemeral=True)
+                return
+            
             try:
                 if self.db is None:
                     await interaction.response.send_message("❌ Database not available", ephemeral=True)
@@ -672,6 +873,8 @@ class VerificationBot(commands.Bot):
                     0xff0000
                 )
                 
+                logger.info(f"IP banned: {ip_address} by {interaction.user}")
+                
                 embed = discord.Embed(
                     title="✅ IP Banned",
                     description=f"IP `{ip_address}` has been added to the ban list.\n**Reason:** {reason}",
@@ -682,6 +885,7 @@ class VerificationBot(commands.Bot):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                     
             except Exception as e:
+                logger.error(f"Ban IP error: {e}")
                 await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
     
     async def send_webhook(self, title, description, color):
@@ -700,25 +904,21 @@ class VerificationBot(commands.Bot):
             async with aiohttp.ClientSession() as session:
                 async with session.post(Config.WEBHOOK_URL, json={"embeds": [embed]}) as response:
                     if response.status != 204:
-                        print(f"Webhook failed: {response.status}")
+                        logger.error(f"Webhook failed: {response.status}")
         except Exception as e:
-            print(f"Webhook error: {e}")
-    
-    async def log_action(self, action):
-        """Log action to webhook"""
-        if Config.LOGS_WEBHOOK:
-            await self.send_webhook("📝 Action Log", action, 0x00ff00)
+            logger.error(f"Webhook error: {e}")
     
     async def close(self):
         """Cleanup when bot shuts down"""
         self.check_verifications.cancel()
         self.cleanup_pending.cancel()
+        self.backup_database_task.cancel()
         await super().close()
 
 def run_discord_bot():
     """Run Discord bot"""
     if not Config.DISCORD_TOKEN:
-        print("❌ No Discord token configured")
+        logger.error("❌ No Discord token configured")
         return
     
     bot = VerificationBot()
