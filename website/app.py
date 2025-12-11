@@ -254,6 +254,17 @@ def create_app():
             discord_id = discord_user['id']
             username = discord_user['full_username']
             
+            # Check if already verified
+            is_verified = False
+            if db is not None:
+                user_data = db.users.find_one({"discord_id": str(discord_id)})
+                if user_data and user_data.get('verified_at'):
+                    # Already verified
+                    return jsonify({
+                        "success": False, 
+                        "error": "You are already verified! Please return to the server."
+                    }), 400
+            
             # Get client IP
             ip_address = get_client_ip()
             user_agent = request.headers.get('User-Agent', 'Unknown')
@@ -266,8 +277,6 @@ def create_app():
                 banned_ip = db.banned_ips.find_one({"ip_address": ip_address})
                 if banned_ip:
                     is_banned = True
-            elif 'memory_storage' in locals():
-                is_banned = any(ban['ip_address'] == ip_address for ban in memory_storage['banned_ips'])
             
             if is_banned:
                 send_discord_webhook(
@@ -296,8 +305,6 @@ def create_app():
                 
                 if db is not None:
                     db.banned_ips.insert_one(ban_data)
-                elif 'memory_storage' in locals():
-                    memory_storage['banned_ips'].append(ban_data)
                 
                 send_discord_webhook(
                     "🚨 VPN DETECTED & BANNED",
@@ -329,11 +336,6 @@ def create_app():
                     {"$set": user_data},
                     upsert=True
                 )
-            elif 'memory_storage' in locals():
-                existing = next((u for u in memory_storage['users'] if u['discord_id'] == str(discord_id)), None)
-                if existing:
-                    memory_storage['users'].remove(existing)
-                memory_storage['users'].append(user_data)
             
             # Send success notification
             send_discord_webhook(
@@ -347,7 +349,7 @@ def create_app():
             
             return jsonify({
                 "success": True,
-                "message": "Verification successful! You can now access the server.",
+                "message": "✅ Verification successful! You can now return to the server and access all channels.",
                 "data": {
                     "username": username,
                     "ip_masked": ip_address[:7] + "***" if len(ip_address) > 7 else "***",
