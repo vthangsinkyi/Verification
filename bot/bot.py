@@ -30,11 +30,17 @@ class VerificationBot(commands.Bot):
         self.db = None
         self.setup_database()
         
-        # Store pending verifications
+        # Store pending verifications with attempt tracking
         self.pending_verifications = {}
+        
+        # Store failed attempts (for blacklisting)
+        self.failed_attempts = {}
         
         # Command cooldown tracking
         self.command_cooldowns = {}
+        
+        # Track which users we've already logged "not found" for
+        self.already_logged_not_found = set()
         
     def setup_database(self):
         """Setup MongoDB connection"""
@@ -72,7 +78,7 @@ class VerificationBot(commands.Bot):
         except Exception as e:
             logger.error(f"❌ Command sync failed: {e}")
     
-    @tasks.loop(seconds=10)  # Check every 10 seconds
+    @tasks.loop(seconds=30)  # Changed from 10 to 30 seconds to reduce spam
     async def check_verifications(self):
         """Check for new verified users and give them roles"""
         if self.db is None or not Config.VERIFIED_ROLE_ID:
@@ -83,24 +89,30 @@ class VerificationBot(commands.Bot):
             unprocessed_users = self.db.users.find({
                 "verified_at": {"$exists": True},
                 "role_added": {"$ne": True},
-                "is_banned": {"$ne": True}
+                "is_banned": {"$ne": True},
+                "is_blacklisted": {"$ne": True}  # Skip blacklisted users
             })
             
             for user in unprocessed_users:
                 discord_id = user.get('discord_id')
-                username = user.get('username')
+                username = user.get('username', 'Unknown')
                 
                 if not discord_id:
                     continue
                 
-                logger.info(f"🎯 Processing verification for {username} ({discord_id})")
+                # Check if we should skip logging (already logged recently)
+                user_key = f"{discord_id}_{username}"
                 
                 # Try to give role in all guilds the bot is in
                 role_given = False
+                member_found = False
+                
                 for guild in self.guilds:
                     try:
                         member = await guild.fetch_member(int(discord_id))
                         if member:
+                            member_found = True
+                            
                             # Get verified role
                             verified_role = guild.get_role(int(Config.VERIFIED_ROLE_ID))
                             if verified_role:
@@ -129,6 +141,12 @@ class VerificationBot(commands.Bot):
                                 
                                 role_given = True
                                 
+                                # Clear from pending and failed attempts
+                                if discord_id in self.pending_verifications:
+                                    del self.pending_verifications[discord_id]
+                                if user_key in self.already_logged_not_found:
+                                    self.already_logged_not_found.remove(user_key)
+                                
                                 # Send webhook notification
                                 await self.send_webhook(
                                     "✅ ROLE ASSIGNED",
@@ -146,32 +164,103 @@ class VerificationBot(commands.Bot):
                         logger.error(f"❌ Error giving role in {guild.name}: {e}")
                         continue
                 
-                if not role_given:
-                    logger.warning(f"⚠️  Could not find member {username} ({discord_id}) in any server")
-                    # Add to pending for retry later
-                    self.pending_verifications[discord_id] = {
-                        "username": username,
-                        "attempts": self.pending_verifications.get(discord_id, {}).get("attempts", 0) + 1,
-                        "last_attempt": time.time()
-                    }
+                if not member_found:
+                    # User not in any server
+                    if user_key not in self.already_logged_not_found:
+                        # First time we can't find them
+                        logger.info(f"⏳ User verified but not in server yet: {username} ({discord_id})")
+                        self.already_logged_not_found.add(user_key)
+                        
+                        # Add to pending for tracking
+                        self.pending_verifications[discord_id] = {
+                            "username": username,
+                            "attempts": 1,
+                            "first_attempt": time.time(),
+                            "last_attempt": time.time()
+                        }
+                    else:
+                        # Update pending verification attempts
+                        if discord_id in self.pending_verifications:
+                            self.pending_verifications[discord_id]["attempts"] += 1
+                            self.pending_verifications[discord_id]["last_attempt"] = time.time()
+                            
+                            # Check if should blacklist (too many attempts)
+                            attempts = self.pending_verifications[discord_id]["attempts"]
+                            first_attempt = self.pending_verifications[discord_id]["first_attempt"]
+                            time_since_first = time.time() - first_attempt
+                            
+                            # Blacklist if: more than 10 attempts AND more than 24 hours passed
+                            if attempts > 10 and time_since_first > 86400:  # 24 hours
+                                logger.warning(f"🚫 Blacklisting user {username} ({discord_id}) - Too many attempts without joining")
+                                
+                                # Mark as blacklisted in database
+                                self.db.users.update_one(
+                                    {"discord_id": discord_id},
+                                    {"$set": {"is_blacklisted": True, "blacklist_reason": "Too many verification attempts without joining server"}}
+                                )
+                                
+                                # Remove from pending
+                                del self.pending_verifications[discord_id]
+                                
+                                # Send webhook notification
+                                await self.send_webhook(
+                                    "🚫 USER BLACKLISTED",
+                                    f"**User:** {username}\n**ID:** {discord_id}\n**Reason:** Too many verification attempts without joining server\n**Attempts:** {attempts}\n**Time since first attempt:** {int(time_since_first/3600)} hours",
+                                    0xff9900
+                                )
         
         except Exception as e:
             logger.error(f"❌ Error in check_verifications: {e}")
     
-    @tasks.loop(minutes=5)  # Cleanup every 5 minutes
+    @tasks.loop(minutes=10)  # Cleanup every 10 minutes
     async def cleanup_pending(self):
-        """Cleanup old pending verifications"""
+        """Cleanup old pending verifications and clear logs"""
         current_time = time.time()
         expired = []
+        cleaned_logs = 0
         
+        # Clean pending verifications (older than 7 days)
         for discord_id, data in self.pending_verifications.items():
-            # Remove if too many attempts or too old
-            if data["attempts"] > 10 or (current_time - data["last_attempt"]) > 3600:  # 1 hour
+            first_attempt = data.get("first_attempt", current_time)
+            if (current_time - first_attempt) > 604800:  # 7 days
                 expired.append(discord_id)
+                
+                # Also mark as blacklisted if they never joined
+                username = data.get("username", "Unknown")
+                logger.info(f"🗑️  Removing old pending verification: {username} ({discord_id}) - Never joined after 7 days")
+                
+                if self.db is not None:
+                    self.db.users.update_one(
+                        {"discord_id": discord_id},
+                        {"$set": {"is_blacklisted": True, "blacklist_reason": "Never joined server after 7 days"}}
+                    )
         
         for discord_id in expired:
             del self.pending_verifications[discord_id]
-            logger.info(f"🗑️  Removed expired pending verification: {discord_id}")
+        
+        # Clean already_logged_not_found set (remove entries older than 1 hour)
+        to_remove = []
+        for user_key in list(self.already_logged_not_found):
+            # Extract timestamp from key or use default
+            # We'll remove entries that have been there too long to keep memory usage low
+            if len(self.already_logged_not_found) > 1000:  # If set gets too big
+                to_remove.append(user_key)
+                cleaned_logs += 1
+        
+        for user_key in to_remove:
+            self.already_logged_not_found.remove(user_key)
+        
+        if cleaned_logs > 0:
+            logger.info(f"🧹 Cleaned {cleaned_logs} old log entries from memory")
+        
+        # Clean failed attempts (older than 1 hour)
+        to_remove_failed = []
+        for user_key, attempt_data in list(self.failed_attempts.items()):
+            if (current_time - attempt_data.get("last_attempt", 0)) > 3600:  # 1 hour
+                to_remove_failed.append(user_key)
+        
+        for user_key in to_remove_failed:
+            del self.failed_attempts[user_key]
     
     @tasks.loop(hours=6)  # Backup every 6 hours
     async def backup_database_task(self):
@@ -218,7 +307,8 @@ class VerificationBot(commands.Bot):
             user_data = self.db.users.find_one({
                 "discord_id": str(member.id),
                 "role_added": {"$ne": True},
-                "is_banned": {"$ne": True}
+                "is_banned": {"$ne": True},
+                "is_blacklisted": {"$ne": True}
             })
             
             if user_data:
@@ -235,6 +325,15 @@ class VerificationBot(commands.Bot):
                     )
                     
                     logger.info(f"✅ Auto-gave role to rejoining member: {member.name}")
+                    
+                    # Remove from pending if exists
+                    if str(member.id) in self.pending_verifications:
+                        del self.pending_verifications[str(member.id)]
+                    
+                    # Remove from already_logged_not_found
+                    user_key = f"{member.id}_{member.name}"
+                    if user_key in self.already_logged_not_found:
+                        self.already_logged_not_found.remove(user_key)
                     
                     await self.send_webhook(
                         "🔄 AUTO-ROLE ON JOIN",
@@ -264,12 +363,13 @@ class VerificationBot(commands.Bot):
                 ephemeral=True
             )
             
+            # 2. Send public verification panel in the channel
             embed = discord.Embed(
                 title="🔐 SERVER VERIFICATION",
-                description="**Click the button below to start verification**",
+                description="**Click the button below to start verification**\n\nThis verification is required to access all channels in the server.\n\n⚠️ **Rules:**\n• VPN/Proxy users will be banned\n• One account per person only\n• IP address will be recorded for security",
                 color=discord.Color.blue()
             )
-            embed.set_footer(text="KoalaHub")
+            embed.set_footer(text="Protecting our community from scammers")
             
             view = discord.ui.View()
             button = discord.ui.Button(
@@ -279,10 +379,15 @@ class VerificationBot(commands.Bot):
             )
             view.add_item(button)
             
+            # Send the public panel
             await interaction.channel.send(embed=embed, view=view)
-    
+            
             logger.info(f"Verification panel setup by {interaction.user} in #{interaction.channel.name}")
-            await self.log_action(f"Verification setup by {interaction.user} in #{interaction.channel.name}")
+            await self.send_webhook(
+                "📝 VERIFICATION PANEL SETUP",
+                f"**Setup by:** {interaction.user.mention}\n**Channel:** #{interaction.channel.name}\n**Server:** {interaction.guild.name}",
+                0x00ff00
+            )
         
         # ============ /ban COMMAND ============
         @self.tree.command(name="ban", description="Ban a user and their IP")
@@ -516,7 +621,8 @@ class VerificationBot(commands.Bot):
                                 "role_added_at": datetime.utcnow()
                             },
                             "$setOnInsert": {
-                                "is_banned": False
+                                "is_banned": False,
+                                "is_blacklisted": False
                             }
                         },
                         upsert=True
@@ -563,6 +669,7 @@ class VerificationBot(commands.Bot):
                 total_users = self.db.users.count_documents({})
                 verified_users = self.db.users.count_documents({"verified_at": {"$exists": True}})
                 banned_users = self.db.users.count_documents({"is_banned": True})
+                blacklisted_users = self.db.users.count_documents({"is_blacklisted": True})
                 banned_ips = self.db.banned_ips.count_documents({})
                 
                 # Today's stats
@@ -583,6 +690,7 @@ class VerificationBot(commands.Bot):
                 embed.add_field(name="Total Users", value=f"👥 {total_users}", inline=True)
                 embed.add_field(name="Verified Users", value=f"✅ {verified_users}", inline=True)
                 embed.add_field(name="Banned Users", value=f"🚫 {banned_users}", inline=True)
+                embed.add_field(name="Blacklisted Users", value=f"⛔ {blacklisted_users}", inline=True)
                 embed.add_field(name="Banned IPs", value=f"🔒 {banned_ips}", inline=True)
                 embed.add_field(name="Today's Verifications", value=f"📈 {today_verifications}", inline=True)
                 embed.add_field(name="Pending Verifications", value=f"⏳ {pending}", inline=True)
@@ -745,6 +853,9 @@ class VerificationBot(commands.Bot):
                     embed.add_field(name="VPN Detected", 
                                    value="✅ Yes" if user_data.get('is_vpn') else "❌ No", 
                                    inline=True)
+                    embed.add_field(name="Blacklisted", 
+                                   value="✅ Yes" if user_data.get('is_blacklisted') else "❌ No", 
+                                   inline=True)
                     
                     last_seen = user_data.get('last_seen')
                     if last_seen:
@@ -794,7 +905,8 @@ class VerificationBot(commands.Bot):
                 if self.db is not None:
                     verified_users = self.db.users.find({
                         "verified_at": {"$exists": True},
-                        "is_banned": {"$ne": True}
+                        "is_banned": {"$ne": True},
+                        "is_blacklisted": {"$ne": True}
                     })
                     
                     for user in verified_users:
