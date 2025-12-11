@@ -4,7 +4,6 @@ discord.py==2.3.2
 # Web Framework
 Flask==3.0.0
 Flask-CORS==4.0.0
-Flask-Limiter==3.5.0
 flask-socketio==5.3.6
 eventlet==0.35.1
 gunicorn==21.2.0
@@ -18,15 +17,14 @@ python-dotenv==1.0.0
 requests==2.31.0
 bcrypt==4.1.2
 cryptography==42.0.5
-aiohttp==3.9.3
-aiofiles==23.2.1
 
 # IP Checking
 ipaddress==1.0.23
 maxminddb==2.5.0
 
-# Python 3.13 compatibility
-typing-extensions==4.9.0
+# Async
+aiohttp==3.9.3
+aiofiles==23.2.1
 
 # Dev Tools
 black==24.1.1
