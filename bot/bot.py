@@ -258,12 +258,18 @@ class VerificationBot(commands.Bot):
                 await interaction.response.send_message("⏳ This command is on cooldown. Please wait 30 seconds.", ephemeral=True)
                 return
             
+            # 1. Send ephemeral confirmation to command user
+            await interaction.response.send_message(
+                "✅ Verification panel has been created in this channel!",
+                ephemeral=True
+            )
+            
             embed = discord.Embed(
                 title="🔐 SERVER VERIFICATION",
                 description="**Click the button below to start verification**",
                 color=discord.Color.blue()
             )
-            embed.set_footer(text="Only you can see this message")
+            embed.set_footer(text="KoalaHub")
             
             view = discord.ui.View()
             button = discord.ui.Button(
@@ -273,8 +279,10 @@ class VerificationBot(commands.Bot):
             )
             view.add_item(button)
             
-            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-            logger.info(f"Verification setup by {interaction.user}")
+            await interaction.channel.send(embed=embed, view=view)
+    
+            logger.info(f"Verification panel setup by {interaction.user} in #{interaction.channel.name}")
+            await self.log_action(f"Verification setup by {interaction.user} in #{interaction.channel.name}")
         
         # ============ /ban COMMAND ============
         @self.tree.command(name="ban", description="Ban a user and their IP")
