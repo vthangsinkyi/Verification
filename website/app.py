@@ -1,5 +1,7 @@
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from flask_cors import CORS
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import requests
 import json
 from datetime import datetime, timedelta
@@ -11,12 +13,25 @@ import urllib.parse
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
+from utils.logger import logger
 
 def create_app():
     app = Flask(__name__, template_folder='templates', static_folder='static')
     app.config['SECRET_KEY'] = Config.SECRET_KEY
     app.config['SESSION_TYPE'] = 'filesystem'
+    app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes=15)
+    app.config['SESSION_REFRESH_EACH_REQUEST'] = True
     CORS(app)
+    
+    # Setup rate limiter
+    limiter = Limiter(
+        get_remote_address,
+        app=app,
+        default_limits=["100 per hour", "10 per minute"],
+        storage_uri="memory://",
+        strategy="fixed-window",
+        enabled=True
+    )
     
     # Global database variable
     db_client = None
@@ -28,10 +43,10 @@ def create_app():
         db_client = MongoClient(Config.MONGODB_URI, serverSelectionTimeoutMS=5000)
         db_client.server_info()  # Test connection
         db = db_client[Config.DATABASE_NAME]
-        print("✅ Website connected to MongoDB")
+        logger.info("✅ Website connected to MongoDB")
     except Exception as e:
-        print(f"⚠️  MongoDB connection failed: {e}")
-        print("⚠️  Using fallback memory storage (data will be lost on restart)")
+        logger.error(f"⚠️  MongoDB connection failed: {e}")
+        logger.warning("⚠️  Using fallback memory storage (data will be lost on restart)")
         # Fallback in-memory storage
         db = None
         memory_storage = {
@@ -94,7 +109,7 @@ def create_app():
                 pass
                 
         except Exception as e:
-            print(f"VPN check error: {e}")
+            logger.error(f"VPN check error: {e}")
             
         return False
     
@@ -114,7 +129,7 @@ def create_app():
             response = requests.post(Config.WEBHOOK_URL, json={"embeds": [embed]}, timeout=5)
             return response.status_code in [200, 204]
         except Exception as e:
-            print(f"Webhook error: {e}")
+            logger.error(f"Webhook error: {e}")
             return False
     
     def exchange_code(code):
@@ -142,7 +157,7 @@ def create_app():
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            print(f"OAuth2 token exchange error: {e}")
+            logger.error(f"OAuth2 token exchange error: {e}")
             return None
     
     def get_user_info(access_token):
@@ -160,7 +175,7 @@ def create_app():
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            print(f"Discord API error: {e}")
+            logger.error(f"Discord API error: {e}")
             return None
     
     # Middleware for admin routes
@@ -208,16 +223,19 @@ def create_app():
         code = request.args.get('code')
         
         if not code:
+            logger.warning("No code provided in OAuth2 callback")
             return redirect(url_for('verify_page'))
         
         # Exchange code for access token
         token_data = exchange_code(code)
         if not token_data:
+            logger.error("Failed to exchange OAuth2 code for token")
             return redirect(url_for('verify_page'))
         
         # Get user info
         user_info = get_user_info(token_data.get('access_token'))
         if not user_info:
+            logger.error("Failed to get user info from Discord API")
             return redirect(url_for('verify_page'))
         
         # Store user info in session
@@ -229,22 +247,31 @@ def create_app():
             'full_username': f"{user_info['username']}#{user_info.get('discriminator', '0')}"
         }
         
+        logger.info(f"User logged in: {session['discord_user']['full_username']}")
+        
         return redirect(url_for('verify_page'))
     
     @app.route('/auth/logout')
     def auth_logout():
         """Logout from Discord OAuth2"""
+        username = session.get('discord_user', {}).get('full_username', 'Unknown')
         session.pop('discord_user', None)
+        logger.info(f"User logged out: {username}")
         return redirect(url_for('verify_page'))
     
     @app.route('/api/verify', methods=['POST'])
+    @limiter.limit("5 per minute")  # Rate limiting
     def api_verify():
         """API endpoint for verification"""
+        client_ip = get_client_ip()
+        logger.info(f"Verification attempt from IP: {client_ip}")
+        
         try:
             # Check if user is logged in via Discord OAuth2
             discord_user = session.get('discord_user')
             
             if not discord_user:
+                logger.warning(f"Unauthorized verification attempt from IP: {client_ip}")
                 return jsonify({
                     "success": False, 
                     "error": "Please connect your Discord account first.",
@@ -260,6 +287,7 @@ def create_app():
                 user_data = db.users.find_one({"discord_id": str(discord_id)})
                 if user_data and user_data.get('verified_at'):
                     # Already verified
+                    logger.info(f"Already verified attempt: {username} ({discord_id})")
                     return jsonify({
                         "success": False, 
                         "error": "You are already verified! Please return to the server."
@@ -269,7 +297,7 @@ def create_app():
             ip_address = get_client_ip()
             user_agent = request.headers.get('User-Agent', 'Unknown')
             
-            print(f"🔍 Verification attempt: {username} ({discord_id}) from IP: {ip_address}")
+            logger.info(f"Verification attempt: {username} ({discord_id}) from IP: {ip_address}")
             
             # Check if IP is banned
             is_banned = False
@@ -284,6 +312,7 @@ def create_app():
                     f"**User:** {username}\n**ID:** {discord_id}\n**IP:** ||{ip_address}||\n**Reason:** IP is banned",
                     0xff0000
                 )
+                logger.warning(f"Banned IP attempt: {username} from {ip_address}")
                 return jsonify({
                     "success": False, 
                     "error": "Access denied. Your IP is banned from this server."
@@ -312,6 +341,7 @@ def create_app():
                     0xff0000
                 )
                 
+                logger.warning(f"VPN detected and banned: {username} from {ip_address}")
                 return jsonify({
                     "success": False, 
                     "error": "VPN/Proxy detected. Your IP has been banned from our system."
@@ -344,6 +374,8 @@ def create_app():
                 0x00ff00
             )
             
+            logger.info(f"Verification successful: {username} ({discord_id})")
+            
             # Clear session after successful verification
             session.pop('discord_user', None)
             
@@ -358,22 +390,28 @@ def create_app():
             })
             
         except Exception as e:
-            print(f"❌ Verification error: {e}")
+            logger.error(f"Verification error: {e}")
             return jsonify({"success": False, "error": "Internal server error. Please try again later."}), 500
     
     # Admin Routes
     @app.route('/admin/login', methods=['GET', 'POST'])
+    @limiter.limit("10 per hour")
     def admin_login():
         """Admin login page"""
         if request.method == 'POST':
             username = request.form.get('username')
             password = request.form.get('password')
+            client_ip = get_client_ip()
+            
+            logger.info(f"Admin login attempt from IP: {client_ip}, username: {username}")
             
             if username == Config.ADMIN_USERNAME and password == Config.ADMIN_PASSWORD:
                 session['admin_logged_in'] = True
                 session['admin_username'] = username
+                logger.info(f"Admin login successful: {username} from {client_ip}")
                 return redirect(url_for('admin_dashboard'))
             
+            logger.warning(f"Admin login failed: {username} from {client_ip}")
             return render_template('admin/login.html', error="Invalid credentials")
         
         return render_template('admin/login.html')
@@ -397,16 +435,8 @@ def create_app():
                 stats["total_bans"] = db.banned_ips.count_documents({})
                 today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
                 stats["today_verifications"] = db.users.count_documents({"verified_at": {"$gte": today}})
-            elif 'memory_storage' in locals():
-                stats["total_users"] = len(memory_storage['users'])
-                stats["banned_users"] = len(memory_storage['banned_ips'])
-                stats["total_bans"] = len(memory_storage['banned_ips'])
-                today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-                stats["today_verifications"] = len([u for u in memory_storage['users'] 
-                                                  if (isinstance(u['verified_at'], str) and datetime.fromisoformat(u['verified_at'].replace('Z', '+00:00')) >= today)
-                                                  or (not isinstance(u['verified_at'], str) and u['verified_at'] >= today)])
         except Exception as e:
-            print(f"Stats calculation error: {e}")
+            logger.error(f"Stats calculation error: {e}")
         
         return render_template('admin/dashboard.html', stats=stats)
     
@@ -422,10 +452,8 @@ def create_app():
                 for item in banned_list:
                     if '_id' in item:
                         item['_id'] = str(item['_id'])
-            elif 'memory_storage' in locals():
-                banned_list = memory_storage['banned_ips'][-100:]
         except Exception as e:
-            print(f"Banned list error: {e}")
+            logger.error(f"Banned list error: {e}")
         
         return render_template('admin/banned.html', banned_list=banned_list)
     
@@ -441,12 +469,8 @@ def create_app():
                 for item in verified_list:
                     if '_id' in item:
                         item['_id'] = str(item['_id'])
-            elif 'memory_storage' in locals():
-                verified_list = sorted(memory_storage['users'], 
-                                     key=lambda x: x.get('verified_at', datetime.min), 
-                                     reverse=True)[:100]
         except Exception as e:
-            print(f"Verified list error: {e}")
+            logger.error(f"Verified list error: {e}")
         
         return render_template('admin/verified.html', verified_list=verified_list)
     
@@ -456,25 +480,29 @@ def create_app():
         """Unban IP address"""
         try:
             if db is not None:
-                db.banned_ips.delete_one({"ip_address": ip_address})
-            elif 'memory_storage' in locals():
-                memory_storage['banned_ips'] = [b for b in memory_storage['banned_ips'] if b['ip_address'] != ip_address]
-            
-            send_discord_webhook(
-                "🔓 IP UNBANNED",
-                f"**IP:** ||{ip_address}||\n**Unbanned by:** {session.get('admin_username', 'Admin')}",
-                0x00ff00
-            )
+                result = db.banned_ips.delete_one({"ip_address": ip_address})
+                
+                if result.deleted_count > 0:
+                    send_discord_webhook(
+                        "🔓 IP UNBANNED",
+                        f"**IP:** ||{ip_address}||\n**Unbanned by:** {session.get('admin_username', 'Admin')}",
+                        0x00ff00
+                    )
+                    logger.info(f"IP unbanned: {ip_address} by {session.get('admin_username')}")
+                else:
+                    logger.warning(f"IP not found for unban: {ip_address}")
             
         except Exception as e:
-            print(f"Unban error: {e}")
+            logger.error(f"Unban error: {e}")
         
         return redirect(url_for('admin_banned'))
     
     @app.route('/admin/logout')
     def admin_logout():
         """Admin logout"""
+        username = session.get('admin_username', 'Unknown')
         session.clear()
+        logger.info(f"Admin logged out: {username}")
         return redirect(url_for('admin_login'))
     
     @app.route('/healthz')
@@ -485,17 +513,38 @@ def create_app():
             "status": "online",
             "service": "discord-verification",
             "database": "connected" if db is not None else "memory_mode",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.utcnow().isoformat(),
+            "version": "1.0.0"
         }
         return jsonify(status)
+    
+    @app.route('/feedback')
+    def feedback():
+        """Feedback and support page"""
+        return render_template('feedback.html')
     
     # Error handlers
     @app.errorhandler(404)
     def not_found(error):
+        logger.warning(f"404 Not Found: {request.path}")
         return render_template('error.html', error="Page not found"), 404
+    
+    @app.errorhandler(429)
+    def ratelimit_handler(e):
+        logger.warning(f"Rate limit exceeded from IP: {get_client_ip()}")
+        return jsonify({
+            "success": False,
+            "error": "Rate limit exceeded. Please try again later."
+        }), 429
     
     @app.errorhandler(500)
     def internal_error(error):
+        logger.error(f"500 Internal Server Error: {error}")
         return render_template('error.html', error="Internal server error"), 500
+    
+    @app.errorhandler(Exception)
+    def handle_exception(e):
+        logger.error(f"Unhandled exception: {e}")
+        return render_template('error.html', error="An unexpected error occurred"), 500
     
     return app
