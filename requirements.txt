@@ -22,8 +22,11 @@ cryptography==42.0.5
 ipaddress==1.0.23
 maxminddb==2.5.0
 
-# Async - UPDATED VERSION FOR PYTHON 3.13
+# Async
 aiohttp==3.9.3
+
+# Python 3.13 compatibility
+typing-extensions==4.9.0
 
 # Dev Tools
 black==24.1.1
