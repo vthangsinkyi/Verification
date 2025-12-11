@@ -1,18 +1,20 @@
-import discord
-from discord.ext import commands, tasks
-from discord import app_commands
-import aiohttp
 import asyncio
 import json
+import os
+import sys
+import time
 from datetime import datetime, timedelta
 from typing import Optional
-import sys
-import os
-import time
+
+import aiohttp
+import discord
+from discord import app_commands
+from discord.ext import commands, tasks
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
+
 
 class VerificationBot(commands.Bot):
     def __init__(self):
@@ -220,10 +222,10 @@ class VerificationBot(commands.Bot):
             """Setup verification embed"""
             embed = discord.Embed(
                 title="🔐 SERVER VERIFICATION",
-                description="**SERVER VERIFICATION**",
+                description="**Click the button below to start verification**",
                 color=discord.Color.blue()
             )
-            embed.set_footer(text="Protecting our community from scammers")
+            embed.set_footer(text="Only you can see this message")
             
             view = discord.ui.View()
             button = discord.ui.Button(
@@ -233,82 +235,106 @@ class VerificationBot(commands.Bot):
             )
             view.add_item(button)
             
-            await interaction.response.send_message(embed=embed, view=view)
+            await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
             await self.log_action(f"Verification setup by {interaction.user}")
         
         # ============ /ban COMMAND ============
         @self.tree.command(name="ban", description="Ban a user and their IP")
         @app_commands.checks.has_permissions(ban_members=True)
         @app_commands.describe(
-            user="User to ban",
+            user_id="User ID or mention to ban",
             reason="Reason for ban",
             delete_messages="Delete messages from this user (days, 0-7)"
         )
         async def ban_user(
             interaction: discord.Interaction, 
-            user: discord.Member, 
+            user_id: str,
             reason: str = "No reason provided",
             delete_messages: app_commands.Range[int, 0, 7] = 0
         ):
-            """Ban user and their IP"""
+            """Ban user by ID and their IP"""
             try:
-                if user.id == interaction.user.id:
+                # Clean user ID (remove <@ and > if mention)
+                user_id = user_id.replace('<@', '').replace('>', '').replace('!', '')
+                
+                if not user_id.isdigit():
+                    await interaction.response.send_message("❌ Invalid user ID. Please provide a valid Discord ID or mention.", ephemeral=True)
+                    return
+                
+                user_id_int = int(user_id)
+                
+                # Check if trying to ban self
+                if user_id_int == interaction.user.id:
                     await interaction.response.send_message("❌ You cannot ban yourself!", ephemeral=True)
                     return
                 
-                if user.guild_permissions.administrator:
+                # Try to find user in guild
+                user = None
+                try:
+                    user = await interaction.guild.fetch_member(user_id_int)
+                except discord.NotFound:
+                    # User not in server, but we can still ban by ID
+                    pass
+                
+                if user and user.guild_permissions.administrator:
                     await interaction.response.send_message("❌ You cannot ban an administrator!", ephemeral=True)
                     return
                 
-                # Check if user is already in database to get their IP
+                # Get IP from database if exists
                 user_ip = "Unknown"
+                username = "Unknown"
                 if self.db is not None:
-                    user_data = self.db.users.find_one({"discord_id": str(user.id)})
-                    if user_data and user_data.get('ip_address'):
-                        user_ip = user_data['ip_address']
+                    user_data = self.db.users.find_one({"discord_id": user_id})
+                    if user_data:
+                        user_ip = user_data.get('ip_address', 'Unknown')
+                        username = user_data.get('username', 'Unknown')
                         
                         # Save IP to banned_ips collection
                         self.db.banned_ips.insert_one({
-                            "discord_id": str(user.id),
-                            "username": str(user),
+                            "discord_id": user_id,
+                            "username": username,
                             "ip_address": user_ip,
                             "reason": reason,
                             "banned_by": str(interaction.user),
                             "banned_at": datetime.utcnow()
                         })
+                        
+                        # Mark user as banned in users collection
+                        self.db.users.update_one(
+                            {"discord_id": user_id},
+                            {"$set": {"is_banned": True}}
+                        )
                 
-                # Ban from Discord
-                await user.ban(reason=reason, delete_message_days=delete_messages)
-                
-                # Remove verified role if they have it
-                if Config.VERIFIED_ROLE_ID:
-                    try:
-                        verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID))
-                        if verified_role and verified_role in user.roles:
-                            # Remove from verified users in database
-                            if self.db is not None:
-                                self.db.users.delete_one({"discord_id": str(user.id)})
-                    except:
-                        pass
+                # Ban from Discord (works even if user not in server)
+                try:
+                    await interaction.guild.ban(
+                        discord.Object(id=user_id_int),
+                        reason=reason,
+                        delete_message_days=delete_messages
+                    )
+                except discord.NotFound:
+                    # User not in server, but we still log the ban
+                    pass
+                except discord.Forbidden:
+                    await interaction.response.send_message("❌ I don't have permission to ban this user!", ephemeral=True)
+                    return
                 
                 # Send webhook notification
                 await self.send_webhook(
                     "🚨 USER BANNED",
-                    f"**User:** {user.mention}\n**ID:** {user.id}\n**Reason:** {reason}\n**Banned by:** {interaction.user.mention}\n**IP:** ||{user_ip}||\n**Messages Deleted:** {delete_messages} days",
+                    f"**User:** <@{user_id}>\n**ID:** {user_id}\n**Username:** {username}\n**Reason:** {reason}\n**Banned by:** {interaction.user.mention}\n**IP:** ||{user_ip}||\n**Messages Deleted:** {delete_messages} days",
                     0xff0000
                 )
                 
                 embed = discord.Embed(
-                    title="✅ User Banned",
-                    description=f"{user.mention} has been banned and their IP has been recorded.\n\n**Reason:** {reason}\n**IP:** ||{user_ip}||",
+                    title="✅ User Banned Successfully",
+                    description=f"**User:** <@{user_id}>\n**ID:** {user_id}\n**IP:** ||{user_ip}||\n**Reason:** {reason}",
                     color=discord.Color.red()
                 )
                 embed.set_footer(text=f"Banned by {interaction.user}")
                 
-                await interaction.response.send_message(embed=embed)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                 
-            except discord.Forbidden:
-                await interaction.response.send_message("❌ I don't have permission to ban this user!", ephemeral=True)
             except Exception as e:
                 await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
         
@@ -327,11 +353,19 @@ class VerificationBot(commands.Bot):
             """Force verify a user"""
             try:
                 if not Config.VERIFIED_ROLE_ID:
-                    await interaction.response.send_message("❌ Verified role ID not configured in .env file!", ephemeral=True)
+                    await interaction.response.send_message("❌ Verified role ID not configured!", ephemeral=True)
+                    return
+                
+                # Check if already verified
+                verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID))
+                if verified_role and verified_role in user.roles:
+                    await interaction.response.send_message(
+                        f"❌ {user.mention} is already verified!", 
+                        ephemeral=True
+                    )
                     return
                 
                 # Get verified role
-                verified_role = interaction.guild.get_role(int(Config.VERIFIED_ROLE_ID))
                 if not verified_role:
                     await interaction.response.send_message(f"❌ Verified role not found! Check if role ID {Config.VERIFIED_ROLE_ID} exists.", ephemeral=True)
                     return
@@ -376,7 +410,7 @@ class VerificationBot(commands.Bot):
                 )
                 embed.set_footer(text=f"Verified by {interaction.user}")
                 
-                await interaction.response.send_message(embed=embed)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                 
             except Exception as e:
                 await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
@@ -467,7 +501,7 @@ class VerificationBot(commands.Bot):
                         self.stop()
                 
                 view = ConfirmView()
-                await interaction.response.send_message(embed=embed, view=view)
+                await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
                 
             except Exception as e:
                 await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
@@ -519,7 +553,7 @@ class VerificationBot(commands.Bot):
                     last_seen = user_data.get('last_seen')
                     if last_seen:
                         if isinstance(last_seen, datetime):
-                            last_seen_str = last_seen.strftime("%Y-%m-d %H:%M")
+                            last_seen_str = last_seen.strftime("%Y-%m-%d %H:%M")
                         else:
                             last_seen_str = str(last_seen)
                         embed.add_field(name="Last Seen", value=last_seen_str, inline=True)
@@ -534,9 +568,9 @@ class VerificationBot(commands.Bot):
                                        value="✅ Role assigned" if user_data.get('role_added') else "❌ Role pending",
                                        inline=True)
             
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         
-        # ============ /fix_roles COMMAND (NEW) ============
+        # ============ /fix_roles COMMAND ============
         @self.tree.command(name="fix_roles", description="Fix missing roles for verified users")
         @app_commands.checks.has_permissions(administrator=True)
         async def fix_roles(interaction: discord.Interaction):
@@ -552,7 +586,7 @@ class VerificationBot(commands.Bot):
                     return
                 
                 # Show working message
-                await interaction.response.defer()
+                await interaction.response.defer(ephemeral=True)
                 
                 # Get all verified users from database
                 fixed_count = 0
@@ -587,10 +621,10 @@ class VerificationBot(commands.Bot):
                     color=discord.Color.green()
                 )
                 
-                await interaction.followup.send(embed=embed)
+                await interaction.followup.send(embed=embed, ephemeral=True)
                 
             except Exception as e:
-                await interaction.followup.send(f"❌ Error: {str(e)}")
+                await interaction.followup.send(f"❌ Error: {str(e)}", ephemeral=True)
         
         # ============ /banip COMMAND ============
         @self.tree.command(name="banip", description="Ban an IP address manually")
@@ -618,7 +652,7 @@ class VerificationBot(commands.Bot):
                         description=f"IP `{ip_address}` is already banned.\n**Reason:** {existing.get('reason')}\n**Banned by:** {existing.get('banned_by')}",
                         color=discord.Color.orange()
                     )
-                    await interaction.response.send_message(embed=embed)
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
                     return
                 
                 # Add to banned IPs
@@ -645,7 +679,7 @@ class VerificationBot(commands.Bot):
                 )
                 embed.set_footer(text=f"Banned by {interaction.user}")
                 
-                await interaction.response.send_message(embed=embed)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
                     
             except Exception as e:
                 await interaction.response.send_message(f"❌ Error: {str(e)}", ephemeral=True)
