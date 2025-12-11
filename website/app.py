@@ -1,7 +1,5 @@
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for
 from flask_cors import CORS
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 import requests
 import json
 from datetime import datetime, timedelta
@@ -9,6 +7,7 @@ import secrets
 import os
 import sys
 import urllib.parse
+import time  # Add this import
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,15 +22,26 @@ def create_app():
     app.config['SESSION_REFRESH_EACH_REQUEST'] = True
     CORS(app)
     
-    # Setup rate limiter
-    limiter = Limiter(
-        get_remote_address,
-        app=app,
-        default_limits=["100 per hour", "10 per minute"],
-        storage_uri="memory://",
-        strategy="fixed-window",
-        enabled=True
-    )
+    # Simple rate limiting dictionary
+    rate_limits = {}
+    
+    def check_rate_limit(ip, limit=5, window=60):
+        """Simple rate limiting"""
+        current_time = time.time()
+        
+        if ip not in rate_limits:
+            rate_limits[ip] = []
+        
+        # Remove old entries
+        rate_limits[ip] = [t for t in rate_limits[ip] if current_time - t < window]
+        
+        # Check if over limit
+        if len(rate_limits[ip]) >= limit:
+            return False
+        
+        # Add current request
+        rate_limits[ip].append(current_time)
+        return True
     
     # Global database variable
     db_client = None
@@ -260,11 +270,18 @@ def create_app():
         return redirect(url_for('verify_page'))
     
     @app.route('/api/verify', methods=['POST'])
-    @limiter.limit("5 per minute")  # Rate limiting
     def api_verify():
         """API endpoint for verification"""
         client_ip = get_client_ip()
         logger.info(f"Verification attempt from IP: {client_ip}")
+        
+        # Simple rate limiting
+        if not check_rate_limit(client_ip, limit=5, window=60):
+            logger.warning(f"Rate limit exceeded for IP: {client_ip}")
+            return jsonify({
+                "success": False,
+                "error": "Rate limit exceeded. Please try again later."
+            }), 429
         
         try:
             # Check if user is logged in via Discord OAuth2
@@ -395,7 +412,6 @@ def create_app():
     
     # Admin Routes
     @app.route('/admin/login', methods=['GET', 'POST'])
-    @limiter.limit("10 per hour")
     def admin_login():
         """Admin login page"""
         if request.method == 'POST':
@@ -404,6 +420,11 @@ def create_app():
             client_ip = get_client_ip()
             
             logger.info(f"Admin login attempt from IP: {client_ip}, username: {username}")
+            
+            # Rate limiting for admin login
+            if not check_rate_limit(client_ip, limit=10, window=3600):  # 10 attempts per hour
+                logger.warning(f"Admin login rate limit exceeded for IP: {client_ip}")
+                return render_template('admin/login.html', error="Too many login attempts. Please try again later.")
             
             if username == Config.ADMIN_USERNAME and password == Config.ADMIN_PASSWORD:
                 session['admin_logged_in'] = True
@@ -528,14 +549,6 @@ def create_app():
     def not_found(error):
         logger.warning(f"404 Not Found: {request.path}")
         return render_template('error.html', error="Page not found"), 404
-    
-    @app.errorhandler(429)
-    def ratelimit_handler(e):
-        logger.warning(f"Rate limit exceeded from IP: {get_client_ip()}")
-        return jsonify({
-            "success": False,
-            "error": "Rate limit exceeded. Please try again later."
-        }), 429
     
     @app.errorhandler(500)
     def internal_error(error):
