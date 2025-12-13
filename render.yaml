@@ -1,44 +1,24 @@
 services:
-  # ------------------------------------
-  # 1. FLASK WEBSITE SERVICE
-  # ------------------------------------
   - type: web
-    name: discord-verification-website
+    name: discord-verification
     env: python
     region: virginia
     buildCommand: |
       pip install --upgrade pip
       pip install -r requirements.txt
     startCommand: |
-      gunicorn --worker-class eventlet --bind 0.0.0.0:$PORT website.wsgi:application
+      gunicorn --worker-class eventlet --workers 4 --bind 0.0.0.0:$PORT website.wsgi:app
     envVars:
-      - key: DISCORD_WEBHOOK_URL
-        sync: false
-      - key: DISCORD_LOGS_WEBHOOK
-        sync: false
-      - key: MONGODB_URI
-        sync: false
-      - key: DATABASE_NAME
-        sync: false
-      - key: SECRET_KEY
-        sync: false
-      - key: FLASK_ENV
-        value: production
-      - key: ADMIN_USERNAME
-        sync: false
-      - key: ADMIN_PASSWORD
-        sync: false
-      - key: WEBSITE_URL
-        value: https://koalahub.onrender.com
-      # Add Python version specification
       - key: PYTHON_VERSION
         value: 3.11.9
+      - key: FLASK_ENV
+        value: production
+      # Add all your environment variables here in Render dashboard
+    healthCheckPath: /health
+    autoDeploy: true
 
-  # ------------------------------------
-  # 2. DISCORD BOT WORKER
-  # ------------------------------------
   - type: worker
-    name: discord-verification-bot
+    name: discord-bot
     env: python
     region: virginia
     buildCommand: |
@@ -47,24 +27,5 @@ services:
     startCommand: |
       python bot/bot.py
     envVars:
-      - key: DISCORD_TOKEN
-        sync: false
-      - key: DISCORD_GUILD_ID
-        sync: false
-      - key: VERIFIED_ROLE_ID
-        sync: false
-      - key: DISCORD_WEBHOOK_URL
-        sync: false
-      - key: DISCORD_LOGS_WEBHOOK
-        sync: false
-      - key: MONGODB_URI
-        sync: false
-      - key: DATABASE_NAME
-        sync: false
-      - key: IPINFO_TOKEN
-        sync: false
-      - key: VPN_API_KEY
-        sync: false
-      # Add Python version specification
       - key: PYTHON_VERSION
         value: 3.11.9
