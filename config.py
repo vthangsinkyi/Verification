@@ -1,4 +1,5 @@
 import os
+import secrets
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -11,22 +12,24 @@ class Config:
     CLIENT_SECRET = os.getenv('CLIENT_SECRET', '')
     REDIRECT_URI = os.getenv('REDIRECT_URI', '')
     
-    # Webhooks
+    # Webhooks (NEW: Separate webhooks for different purposes)
     WEBHOOK_URL = os.getenv('DISCORD_WEBHOOK_URL', '')
     LOGS_WEBHOOK = os.getenv('DISCORD_LOGS_WEBHOOK', '')
+    ALERTS_WEBHOOK = os.getenv('DISCORD_ALERTS_WEBHOOK', '')
+    BACKUP_WEBHOOK = os.getenv('DISCORD_BACKUP_WEBHOOK', '')
     
     # MongoDB
     MONGODB_URI = os.getenv('MONGODB_URI', 'mongodb://localhost:27017/')
     DATABASE_NAME = os.getenv('DATABASE_NAME', 'discord_verification')
     
     # Flask
-    SECRET_KEY = os.getenv('SECRET_KEY', 'production-secret-key-change-this')
+    SECRET_KEY = os.getenv('SECRET_KEY', secrets.token_hex(32))  # Auto-generate if missing
     FLASK_ENV = os.getenv('FLASK_ENV', 'production')
-    PORT = int(os.getenv('PORT', '10000'))  # Render uses 10000
+    PORT = int(os.getenv('PORT', '10000'))
     
-    # Admin
-    ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'admin')
-    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', '')
+    # Admin (NEW: Hashed passwords)
+    ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'Day')
+    ADMIN_PASSWORD_HASH = os.getenv('ADMIN_PASSWORD_HASH', '')  # Store hash, not plain text
     
     # Verification Role
     VERIFIED_ROLE_NAME = "Verified"
@@ -37,6 +40,19 @@ class Config:
     IPINFO_TOKEN = os.getenv('IPINFO_TOKEN', '')
     VPN_API_KEY = os.getenv('VPN_API_KEY', '')
     
-    # Website URL (Set by Render)
+    # Website URL
     WEBSITE_URL = os.getenv('WEBSITE_URL', '')
-    VERIFY_URL = f"{WEBSITE_URL}/verify" if WEBSITE_URL else "https://koalahub.onrender.com/verify"
+    VERIFY_URL = f"{WEBSITE_URL}/verify" if WEBSITE_URL else ""
+    
+    # Security Settings (NEW)
+    RATE_LIMIT_PER_MINUTE = int(os.getenv('RATE_LIMIT_PER_MINUTE', '5'))
+    MAX_LOGIN_ATTEMPTS = int(os.getenv('MAX_LOGIN_ATTEMPTS', '5'))
+    SESSION_TIMEOUT_MINUTES = int(os.getenv('SESSION_TIMEOUT_MINUTES', '15'))
+    REQUIRE_2FA = os.getenv('REQUIRE_2FA', 'false').lower() == 'true'
+    
+    # Monitoring (NEW)
+    HEALTH_CHECK_INTERVAL = int(os.getenv('HEALTH_CHECK_INTERVAL', '300'))
+    
+    # Backup Settings (NEW)
+    BACKUP_INTERVAL_HOURS = int(os.getenv('BACKUP_INTERVAL_HOURS', '6'))
+    BACKUP_RETENTION_DAYS = int(os.getenv('BACKUP_RETENTION_DAYS', '7'))
